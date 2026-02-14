@@ -82,6 +82,8 @@ const ROUTER_PROMPT = `Classify the message into category 1, 2, or 3. Reply with
 2 = code (programming, debugging, scripts, technical errors, code review)
 3 = complex (architecture, planning, deep analysis, reports, essays)
 
+If previous messages are shown in brackets, classify based on the conversation TOPIC, not just the latest message.
+
 "hey" → 1
 "fix this TypeError" → 2
 "design a system" → 3
@@ -253,6 +255,7 @@ async function callOpenAICompatible(
 export async function routeMessage(
   message: string,
   config: RouterConfig,
+  recentContext?: string[],
 ): Promise<RouteResult> {
   const start = Date.now();
   const provider = config.provider ?? "ollama";
@@ -262,6 +265,17 @@ export async function routeMessage(
   const timeoutMs = config.timeoutMs ?? 10_000;
   const systemPrompt = resolveRouterPrompt();
   const resolvedApiKey = resolveApiKey(config.apiKey);
+
+  // Prepend conversation context so the classifier can see the topic
+  const MAX_CONTEXT_CHARS = 200;
+  let classifierInput = message;
+  if (recentContext && recentContext.length > 0) {
+    const contextLines = recentContext.map((msg) => {
+      const truncated = msg.length > MAX_CONTEXT_CHARS ? msg.slice(0, MAX_CONTEXT_CHARS) + "…" : msg;
+      return `[Previous: ${truncated}]`;
+    });
+    classifierInput = contextLines.join("\n") + "\n\n" + message;
+  }
 
   if (!baseUrl) {
     console.warn("[pre-route] No baseUrl configured for openai-compatible provider, using default");
@@ -276,8 +290,8 @@ export async function routeMessage(
   try {
     const raw =
       provider === "openai-compatible"
-        ? await callOpenAICompatible(baseUrl, model, systemPrompt, message, timeoutMs, resolvedApiKey)
-        : await callOllama(baseUrl, model, systemPrompt, message, timeoutMs);
+        ? await callOpenAICompatible(baseUrl, model, systemPrompt, classifierInput, timeoutMs, resolvedApiKey)
+        : await callOllama(baseUrl, model, systemPrompt, classifierInput, timeoutMs);
 
     const latencyMs = Date.now() - start;
 

@@ -32,6 +32,7 @@ import {
   isMarkdownCapableMessageChannel,
   resolveMessageChannel,
 } from "../../utils/message-channel.js";
+import { SessionManager } from "@mariozechner/pi-coding-agent";
 import { resolveRouterConfig, routeMessage, parseRoutedModelRef } from "../../hooks/pre-route.js";
 import { stripHeartbeatToken } from "../heartbeat.js";
 import { isSilentReplyText, SILENT_REPLY_TOKEN } from "../tokens.js";
@@ -114,7 +115,28 @@ export async function runAgentTurnWithFallback(params: {
       : resolveRouterConfig(params.followupRun.run.config);
   let routedModelRef: string | undefined;
   if (routerConfig) {
-    const route = await routeMessage(params.commandBody, routerConfig);
+    // Extract last user message from session for conversation context
+    let recentContext: string[] | undefined;
+    try {
+      const sessionManager = SessionManager.open(params.followupRun.run.sessionFile);
+      const ctx = sessionManager.buildSessionContext();
+      recentContext = ctx.messages
+        .filter((m): m is typeof m & { role: "user" } => m.role === "user")
+        .slice(-1)
+        .map((m) =>
+          typeof m.content === "string"
+            ? m.content
+            : (m.content as Array<{ type: string; text?: string }>)
+                .filter((c) => c.type === "text")
+                .map((c) => c.text ?? "")
+                .join(" "),
+        )
+        .filter((text) => text.length > 0);
+    } catch {
+      // Graceful degradation: route without context if session read fails
+    }
+
+    const route = await routeMessage(params.commandBody, routerConfig, recentContext);
     console.log(
       `[pre-route] tier="${route.tier}" (${route.latencyMs}ms${route.fallback ? " FALLBACK" : ""}) → ${route.modelRef}`,
     );
