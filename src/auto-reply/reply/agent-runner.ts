@@ -334,7 +334,7 @@ export async function runReplyAgent(params: {
       return finalizeWithFollowup(runOutcome.payload, queueKey, runFollowupTurn);
     }
 
-    const { runResult, fallbackProvider, fallbackModel, directlySentBlockKeys } = runOutcome;
+    const { runResult, fallbackProvider, fallbackModel, directlySentBlockKeys, routedModelRef } = runOutcome;
     let { didLogHeartbeatStrip, autoCompactionCompleted } = runOutcome;
 
     if (
@@ -512,6 +512,9 @@ export async function runReplyAgent(params: {
     }
     if (verboseEnabled && activeIsNewSession) {
       finalPayloads = [{ text: `🧭 New session: ${followupRun.run.sessionId}` }, ...finalPayloads];
+    }
+    if (routedModelRef) {
+      finalPayloads = [{ text: `🔀 ${routedModelRef}` }, ...finalPayloads];
     }
     if (responseUsageLine) {
       finalPayloads = appendUsageLine(finalPayloads, responseUsageLine);

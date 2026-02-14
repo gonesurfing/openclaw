@@ -1,18 +1,25 @@
 /**
  * pre-route.ts — Lightweight LLM-based message router
  *
- * Makes a single Ollama call with ONLY the user's message + a tiny
+ * Makes a single LLM call with ONLY the user's message + a tiny
  * classification prompt (~300 tokens total). Returns a model reference
  * string that OpenClaw uses for the actual agent run.
  *
+ * Supports two provider modes:
+ *   - "ollama" (default): Local Ollama instance
+ *   - "openai-compatible": Any OpenAI-compatible API (OpenRouter, etc.)
+ *
  * This runs BEFORE system prompt assembly, tool loading, or any of
- * the heavy context injection. The local model never sees any of that.
+ * the heavy context injection. The router model never sees any of that.
  *
  * Install: Drop into src/hooks/ and wire into the reply handler.
  * Config: Add `router` section to openclaw.json (see below).
  */
 
+import fs from "node:fs";
+import path from "node:path";
 import { type OpenClawConfig } from "../config/config.js";
+import { resolveStateDir } from "../config/paths.js";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -22,10 +29,16 @@ export interface RouterConfig {
   /** Enable/disable the router. Default: false */
   enabled: boolean;
 
-  /** Ollama base URL. Default: "http://localhost:11434" */
-  ollamaBaseUrl?: string;
+  /** Provider type. Default: "ollama" */
+  provider?: "ollama" | "openai-compatible";
 
-  /** Local model to use for classification. Default: "qwen3:4b-instruct-2507-q4_K_M" */
+  /** Base URL for the provider. Ollama default: "http://localhost:11434" */
+  baseUrl?: string;
+
+  /** API key. Supports "env:VAR_NAME" syntax to read from environment. */
+  apiKey?: string;
+
+  /** Model to use for classification. Default: "qwen3:4b-instruct-2507-q4_K_M" */
   model?: string;
 
   /** Timeout in ms for the classification call. Default: 10000 (10s) */
@@ -44,12 +57,6 @@ export interface RouterConfig {
 
   /** Default tier if classification fails or is unrecognized. */
   defaultTier: string;
-
-  /**
-   * Optional: override the system prompt sent to the classifier.
-   * If not set, the built-in ROUTER_PROMPT is used.
-   */
-  systemPrompt?: string;
 }
 
 export interface RouteResult {
@@ -88,11 +95,159 @@ const ROUTER_PROMPT = `Classify the message into category 1, 2, or 3. Reply with
 Reply ONLY the number.`;
 
 // ---------------------------------------------------------------------------
+// Prompt resolution
+// ---------------------------------------------------------------------------
+
+/**
+ * Resolve the router classification prompt.
+ * 1. ~/.openclaw/router/ROUTER.md (if exists and has content)
+ * 2. Built-in ROUTER_PROMPT constant
+ */
+function resolveRouterPrompt(): string {
+  try {
+    const filePath = path.join(resolveStateDir(), "router", "ROUTER.md");
+    if (fs.existsSync(filePath)) {
+      const content = fs.readFileSync(filePath, "utf8").trim();
+      if (content) return content;
+    }
+  } catch {
+    /* ignore */
+  }
+  return ROUTER_PROMPT;
+}
+
+// ---------------------------------------------------------------------------
+// API key resolution
+// ---------------------------------------------------------------------------
+
+function resolveApiKey(apiKey: string | undefined): string | undefined {
+  if (!apiKey) return undefined;
+  if (apiKey.startsWith("env:")) {
+    return process.env[apiKey.slice(4)] ?? undefined;
+  }
+  return apiKey;
+}
+
+// ---------------------------------------------------------------------------
 // Router implementation
 // ---------------------------------------------------------------------------
 
 /**
- * Classify a user message by calling a local LLM via Ollama.
+ * Parse the raw classifier response text into a tier match.
+ */
+function parseTierFromResponse(
+  raw: string,
+  tiers: Record<string, string>,
+): { tier: string; modelRef: string } | null {
+  const cleaned = raw.trim().toLowerCase().replace(/[^a-z0-9]/g, "");
+
+  // Match first character against tier keys (e.g. 1, 2, 3)
+  const firstChar = cleaned.charAt(0);
+  if (firstChar && tiers[firstChar]) {
+    return { tier: firstChar, modelRef: tiers[firstChar] };
+  }
+
+  // Fallback: check if response contains any tier key
+  const tierNames = Object.keys(tiers);
+  const matchedTier = tierNames.find((t) => cleaned.includes(t));
+  if (matchedTier) {
+    return { tier: matchedTier, modelRef: tiers[matchedTier] };
+  }
+
+  return null;
+}
+
+/**
+ * Call Ollama's /api/generate endpoint.
+ */
+async function callOllama(
+  baseUrl: string,
+  model: string,
+  systemPrompt: string,
+  message: string,
+  timeoutMs: number,
+): Promise<string> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+
+  const response = await fetch(`${baseUrl}/api/generate`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      model,
+      system: systemPrompt,
+      prompt: message,
+      stream: false,
+      think: false,
+      options: {
+        num_predict: 8,
+        temperature: 0.0,
+        top_k: 1,
+        num_ctx: 1024,
+        stop: ["\n", ".", ",", " "],
+      },
+    }),
+    signal: controller.signal,
+  });
+
+  clearTimeout(timer);
+
+  if (!response.ok) {
+    throw new Error(`Ollama returned ${response.status}`);
+  }
+
+  const data = (await response.json()) as { response: string };
+  return data.response;
+}
+
+/**
+ * Call an OpenAI-compatible /chat/completions endpoint.
+ */
+async function callOpenAICompatible(
+  baseUrl: string,
+  model: string,
+  systemPrompt: string,
+  message: string,
+  timeoutMs: number,
+  apiKey?: string,
+): Promise<string> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+
+  const headers: Record<string, string> = { "Content-Type": "application/json" };
+  if (apiKey) {
+    headers["Authorization"] = `Bearer ${apiKey}`;
+  }
+
+  const response = await fetch(`${baseUrl}/chat/completions`, {
+    method: "POST",
+    headers,
+    body: JSON.stringify({
+      model,
+      messages: [
+        { role: "system", content: systemPrompt },
+        { role: "user", content: message },
+      ],
+      max_tokens: 8,
+      temperature: 0.0,
+    }),
+    signal: controller.signal,
+  });
+
+  clearTimeout(timer);
+
+  if (!response.ok) {
+    throw new Error(`OpenAI-compatible API returned ${response.status}`);
+  }
+
+  const data = (await response.json()) as {
+    choices: Array<{ message: { content: string } }>;
+  };
+  return data.choices[0]?.message?.content ?? "";
+}
+
+/**
+ * Classify a user message by calling an LLM (Ollama or OpenAI-compatible).
  * Returns the tier and resolved model reference.
  */
 export async function routeMessage(
@@ -100,74 +255,41 @@ export async function routeMessage(
   config: RouterConfig,
 ): Promise<RouteResult> {
   const start = Date.now();
-  const baseUrl = config.ollamaBaseUrl ?? "http://localhost:11434";
+  const provider = config.provider ?? "ollama";
+  const baseUrl =
+    config.baseUrl ?? (provider === "ollama" ? "http://localhost:11434" : undefined);
   const model = config.model ?? "qwen3:4b-instruct-2507-q4_K_M";
   const timeoutMs = config.timeoutMs ?? 10_000;
-  const systemPrompt = config.systemPrompt ?? ROUTER_PROMPT;
+  const systemPrompt = resolveRouterPrompt();
+  const resolvedApiKey = resolveApiKey(config.apiKey);
 
-  const tierNames = Object.keys(config.tiers);
+  if (!baseUrl) {
+    console.warn("[pre-route] No baseUrl configured for openai-compatible provider, using default");
+    return {
+      tier: config.defaultTier,
+      modelRef: config.tiers[config.defaultTier],
+      latencyMs: Date.now() - start,
+      fallback: true,
+    };
+  }
 
   try {
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), timeoutMs);
-
-    const response = await fetch(`${baseUrl}/api/generate`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        model,
-        system: systemPrompt,
-        prompt: message,
-        stream: false,
-        think: false,
-        options: {
-          num_predict: 8,
-          temperature: 0.0,
-          top_k: 1,
-          num_ctx: 1024,
-          stop: ["\n", ".", ",", " "],
-        },
-      }),
-      signal: controller.signal,
-    });
-
-    clearTimeout(timer);
-
-    if (!response.ok) {
-      throw new Error(`Ollama returned ${response.status}`);
-    }
-
-    const data = (await response.json()) as { response: string };
-    const raw = data.response.trim().toLowerCase().replace(/[^a-z0-9]/g, "");
+    const raw =
+      provider === "openai-compatible"
+        ? await callOpenAICompatible(baseUrl, model, systemPrompt, message, timeoutMs, resolvedApiKey)
+        : await callOllama(baseUrl, model, systemPrompt, message, timeoutMs);
 
     const latencyMs = Date.now() - start;
 
-    // Match first character against tier numbers (1, 2, 3)
-    const firstChar = raw.charAt(0);
-    if (firstChar && config.tiers[firstChar]) {
-      return {
-        tier: firstChar,
-        modelRef: config.tiers[firstChar],
-        latencyMs,
-        fallback: false,
-      };
-    }
-
-    // Fallback: check if response contains any tier key
-    const matchedTier = tierNames.find((t) => raw.includes(t));
-
-    if (matchedTier) {
-      return {
-        tier: matchedTier,
-        modelRef: config.tiers[matchedTier],
-        latencyMs,
-        fallback: false,
-      };
+    const match = parseTierFromResponse(raw, config.tiers);
+    if (match) {
+      return { ...match, latencyMs, fallback: false };
     }
 
     // Unrecognized output — use default
+    const cleaned = raw.trim().toLowerCase().replace(/[^a-z0-9]/g, "");
     console.warn(
-      `[pre-route] Unrecognized tier "${raw}" from local model, using default "${config.defaultTier}"`,
+      `[pre-route] Unrecognized tier "${cleaned}" from ${provider} model, using default "${config.defaultTier}"`,
     );
     return {
       tier: config.defaultTier,
@@ -222,12 +344,13 @@ export function resolveRouterConfig(
 
   return {
     enabled: true,
-    ollamaBaseUrl: router.ollamaBaseUrl,
+    provider: router.provider,
+    baseUrl: router.baseUrl,
+    apiKey: router.apiKey,
     model: router.model,
     timeoutMs: router.timeoutMs,
     tiers: router.tiers,
     defaultTier: router.defaultTier,
-    systemPrompt: router.systemPrompt,
   };
 }
 

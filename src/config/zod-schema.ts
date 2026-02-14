@@ -634,12 +634,13 @@ export const OpenClawSchema = z
     router: z
       .object({
         enabled: z.boolean().optional(),
-        ollamaBaseUrl: z.string().optional(),
+        provider: z.enum(["ollama", "openai-compatible"]).optional(),
+        baseUrl: z.string().optional(),
+        apiKey: z.string().optional(),
         model: z.string().optional(),
         timeoutMs: z.number().int().nonnegative().optional(),
         tiers: z.record(z.string(), z.string()),
         defaultTier: z.string(),
-        systemPrompt: z.string().optional(),
       })
       .strict()
       .optional(),

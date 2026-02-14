@@ -50,6 +50,8 @@ export type AgentRunLoopResult =
       autoCompactionCompleted: boolean;
       /** Payload keys sent directly (not via pipeline) during tool flush. */
       directlySentBlockKeys?: Set<string>;
+      /** Model reference selected by pre-route (e.g. "anthropic/claude-opus-4-6"). */
+      routedModelRef?: string;
     }
   | { kind: "final"; payload: ReplyPayload };
 
@@ -110,11 +112,13 @@ export async function runAgentTurnWithFallback(params: {
     params.isHeartbeat || isSystemPrompt
       ? null
       : resolveRouterConfig(params.followupRun.run.config);
+  let routedModelRef: string | undefined;
   if (routerConfig) {
     const route = await routeMessage(params.commandBody, routerConfig);
     console.log(
       `[pre-route] tier="${route.tier}" (${route.latencyMs}ms${route.fallback ? " FALLBACK" : ""}) → ${route.modelRef}`,
     );
+    routedModelRef = route.modelRef;
     const routed = parseRoutedModelRef(route.modelRef);
     params.followupRun.run.provider = routed.provider;
     params.followupRun.run.model = routed.model;
@@ -647,5 +651,6 @@ export async function runAgentTurnWithFallback(params: {
     didLogHeartbeatStrip,
     autoCompactionCompleted,
     directlySentBlockKeys: directlySentBlockKeys.size > 0 ? directlySentBlockKeys : undefined,
+    routedModelRef,
   };
 }
