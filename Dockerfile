@@ -54,6 +54,7 @@ COPY --from=build --chown=node:node /app/dist ./dist
 COPY --from=build --chown=node:node /app/skills ./skills
 COPY --from=build --chown=node:node /app/extensions ./extensions
 COPY --from=build --chown=node:node /app/node_modules ./node_modules
+COPY --chown=node:node docker-entrypoint.sh ./
 
 ENV NODE_ENV=production
 
@@ -62,10 +63,9 @@ ENV NODE_ENV=production
 # This reduces the attack surface by preventing container escape via root privileges
 USER node
 
-# Start gateway server with default config.
-# Binds to loopback (127.0.0.1) by default for security.
-#
-# For container platforms requiring external health checks:
-#   1. Set OPENCLAW_GATEWAY_TOKEN or OPENCLAW_GATEWAY_PASSWORD env var
-#   2. Override CMD: ["node","openclaw.mjs","gateway","--allow-unconfigured","--bind","lan"]
-CMD ["node", "openclaw.mjs", "gateway", "--allow-unconfigured"]
+# The entrypoint handles first-run onboarding automatically.
+# On first run it generates a gateway token (unless OPENCLAW_GATEWAY_TOKEN is set)
+# and runs non-interactive onboarding. Restarts skip onboarding (idempotent).
+# Set OPENCLAW_RESET=1 to force re-onboarding.
+ENTRYPOINT ["/app/docker-entrypoint.sh"]
+CMD ["node", "dist/index.js", "gateway", "--bind", "lan", "--port", "18789"]
