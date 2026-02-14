@@ -1,4 +1,5 @@
-FROM node:22-bookworm
+# ── Build stage ───────────────────────────────────────────────
+FROM node:22-bookworm AS build
 
 # Install Bun (required for build scripts)
 RUN curl -fsSL https://bun.sh/install | bash
@@ -12,8 +13,7 @@ ARG OPENCLAW_DOCKER_APT_PACKAGES=""
 RUN if [ -n "$OPENCLAW_DOCKER_APT_PACKAGES" ]; then \
       apt-get update && \
       DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends $OPENCLAW_DOCKER_APT_PACKAGES && \
-      apt-get clean && \
-      rm -rf /var/lib/apt/lists/* /var/cache/apt/archives/*; \
+      apt-get clean && rm -rf /var/lib/apt/lists/* /var/cache/apt/archives/*; \
     fi
 
 COPY package.json pnpm-lock.yaml pnpm-workspace.yaml .npmrc ./
@@ -29,13 +29,36 @@ RUN pnpm build
 ENV OPENCLAW_PREFER_PNPM=1
 RUN pnpm ui:build
 
+# Strip devDependencies so only production deps remain in node_modules.
+RUN CI=true pnpm install --prod --ignore-scripts
+
+# ── Runtime stage ─────────────────────────────────────────────
+FROM node:22-bookworm-slim
+
+WORKDIR /app
+
+# Install the same extra packages in the runtime image so tools like ffmpeg
+# or native-module runtime libraries are available at runtime too.
+ARG OPENCLAW_DOCKER_APT_PACKAGES=""
+RUN if [ -n "$OPENCLAW_DOCKER_APT_PACKAGES" ]; then \
+      apt-get update && \
+      DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends $OPENCLAW_DOCKER_APT_PACKAGES && \
+      apt-get clean && rm -rf /var/lib/apt/lists/* /var/cache/apt/archives/*; \
+    fi
+
+# Copy only runtime artifacts from the build stage.
+# Using --chown avoids a separate `chown -R` layer that would duplicate all files.
+COPY --from=build --chown=node:node /app/package.json ./
+COPY --from=build --chown=node:node /app/openclaw.mjs ./
+COPY --from=build --chown=node:node /app/dist ./dist
+COPY --from=build --chown=node:node /app/skills ./skills
+COPY --from=build --chown=node:node /app/extensions ./extensions
+COPY --from=build --chown=node:node /app/node_modules ./node_modules
+
 ENV NODE_ENV=production
 
-# Allow non-root user to write temp files during runtime/tests.
-RUN chown -R node:node /app
-
 # Security hardening: Run as non-root user
-# The node:22-bookworm image includes a 'node' user (uid 1000)
+# The node:22-bookworm-slim image includes a 'node' user (uid 1000)
 # This reduces the attack surface by preventing container escape via root privileges
 USER node
 
