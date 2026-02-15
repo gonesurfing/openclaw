@@ -641,6 +641,7 @@ export const OpenClawSchema = z
         timeoutMs: z.number().int().nonnegative().optional(),
         tiers: z.record(z.string(), z.string()).optional(),
         defaultTier: z.string().optional(),
+        debug: z.boolean().optional(),
       })
       .strict()
       .superRefine((router, ctx) => {

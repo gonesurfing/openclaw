@@ -57,6 +57,9 @@ export interface RouterConfig {
 
   /** Default tier if classification fails or is unrecognized. */
   defaultTier: string;
+
+  /** Write debug JSONL log of every classification call. Default: false */
+  debug?: boolean;
 }
 
 export interface RouteResult {
@@ -138,6 +141,34 @@ function resolveApiKey(apiKey: string | undefined): string | undefined {
     return process.env[apiKey.slice(4)] ?? undefined;
   }
   return apiKey;
+}
+
+// ---------------------------------------------------------------------------
+// Debug logging
+// ---------------------------------------------------------------------------
+
+interface DebugEntry {
+  ts: string;
+  model: string;
+  provider: string;
+  systemPrompt: string;
+  classifierInput: string;
+  rawResponse: string | null;
+  parsedTier: string;
+  modelRef: string;
+  fallback: boolean;
+  latencyMs: number;
+  error: string | null;
+}
+
+function appendDebugLog(entry: DebugEntry): void {
+  try {
+    const dir = path.join(resolveStateDir(), "router");
+    fs.mkdirSync(dir, { recursive: true });
+    fs.appendFileSync(path.join(dir, "debug.jsonl"), JSON.stringify(entry) + "\n");
+  } catch {
+    /* never break routing */
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -292,12 +323,28 @@ export async function routeMessage(
 
   if (!baseUrl) {
     console.warn("[pre-route] No baseUrl configured for openai-compatible provider, falling back to default tier");
-    return {
+    const result: RouteResult = {
       tier: config.defaultTier,
       modelRef: config.tiers[config.defaultTier],
       latencyMs: Date.now() - start,
       fallback: true,
     };
+    if (config.debug) {
+      appendDebugLog({
+        ts: new Date().toISOString(),
+        model,
+        provider,
+        systemPrompt,
+        classifierInput,
+        rawResponse: null,
+        parsedTier: result.tier,
+        modelRef: result.modelRef,
+        fallback: true,
+        latencyMs: result.latencyMs,
+        error: "No baseUrl configured",
+      });
+    }
+    return result;
   }
 
   try {
@@ -310,7 +357,23 @@ export async function routeMessage(
 
     const match = parseTierFromResponse(raw, config.tiers);
     if (match) {
-      return { ...match, latencyMs, fallback: false };
+      const result: RouteResult = { ...match, latencyMs, fallback: false };
+      if (config.debug) {
+        appendDebugLog({
+          ts: new Date().toISOString(),
+          model,
+          provider,
+          systemPrompt,
+          classifierInput,
+          rawResponse: raw,
+          parsedTier: result.tier,
+          modelRef: result.modelRef,
+          fallback: false,
+          latencyMs,
+          error: null,
+        });
+      }
+      return result;
     }
 
     // Unrecognized output — use default
@@ -318,12 +381,28 @@ export async function routeMessage(
     console.warn(
       `[pre-route] Unrecognized tier "${cleaned}" from ${provider} model, using default "${config.defaultTier}"`,
     );
-    return {
+    const result: RouteResult = {
       tier: config.defaultTier,
       modelRef: config.tiers[config.defaultTier],
       latencyMs,
       fallback: true,
     };
+    if (config.debug) {
+      appendDebugLog({
+        ts: new Date().toISOString(),
+        model,
+        provider,
+        systemPrompt,
+        classifierInput,
+        rawResponse: raw,
+        parsedTier: result.tier,
+        modelRef: result.modelRef,
+        fallback: true,
+        latencyMs,
+        error: null,
+      });
+    }
+    return result;
   } catch (err) {
     const latencyMs = Date.now() - start;
     const errMsg = err instanceof Error ? err.message : String(err);
@@ -332,12 +411,28 @@ export async function routeMessage(
     console.warn(
       `[pre-route] Classification failed (${errMsg}), using default "${config.defaultTier}"`,
     );
-    return {
+    const result: RouteResult = {
       tier: config.defaultTier,
       modelRef: config.tiers[config.defaultTier],
       latencyMs,
       fallback: true,
     };
+    if (config.debug) {
+      appendDebugLog({
+        ts: new Date().toISOString(),
+        model,
+        provider,
+        systemPrompt,
+        classifierInput,
+        rawResponse: null,
+        parsedTier: result.tier,
+        modelRef: result.modelRef,
+        fallback: true,
+        latencyMs,
+        error: errMsg,
+      });
+    }
+    return result;
   }
 }
 
@@ -378,6 +473,7 @@ export function resolveRouterConfig(
     timeoutMs: router.timeoutMs,
     tiers: router.tiers,
     defaultTier: router.defaultTier,
+    debug: router.debug,
   };
 }
 

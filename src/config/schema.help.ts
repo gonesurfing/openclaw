@@ -327,6 +327,8 @@ export const FIELD_HELP: Record<string, string> = {
     'Routing table mapping tier labels to OpenClaw model references (e.g. { "1": "minimax/MiniMax-Text-01", "2": "anthropic/claude-haiku-4-5-20251001", "3": "anthropic/claude-opus-4-6" }).',
   "router.defaultTier":
     "Default tier used when classification fails or returns an unrecognized value.",
+  "router.debug":
+    "Write a JSONL debug log of every classification call to ~/.openclaw/router/debug.jsonl (default: false).",
   "channels.discord.commands.native": 'Override native commands for Discord (bool or "auto").',
   "channels.discord.commands.nativeSkills":
     'Override native skill commands for Discord (bool or "auto").',
