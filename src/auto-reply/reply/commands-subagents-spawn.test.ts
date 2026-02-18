@@ -94,6 +94,7 @@ describe("/subagents spawn command", () => {
     expect(spawnParams.task).toBe("do the thing");
     expect(spawnParams.agentId).toBe("beta");
     expect(spawnParams.cleanup).toBe("keep");
+    expect(spawnParams.expectsCompletionMessage).toBe(true);
     expect(spawnCtx.agentSessionKey).toBeDefined();
   });
 
@@ -147,6 +148,26 @@ describe("/subagents spawn command", () => {
       agentGroupChannel: "#group-channel",
       agentGroupSpace: "workspace-1",
     });
+  });
+
+  it("prefers CommandTargetSessionKey for native /subagents spawn", async () => {
+    spawnSubagentDirectMock.mockResolvedValue(acceptedResult());
+    const params = buildCommandTestParams("/subagents spawn beta do the thing", baseCfg, {
+      CommandSource: "native",
+      CommandTargetSessionKey: "agent:main:main",
+      OriginatingChannel: "discord",
+      OriginatingTo: "channel:12345",
+    });
+    params.sessionKey = "agent:main:slack:slash:u1";
+
+    const result = await handleSubagentsCommand(params, true);
+
+    expect(result).not.toBeNull();
+    expect(result?.reply?.text).toContain("Spawned subagent beta");
+    const [, spawnCtx] = spawnSubagentDirectMock.mock.calls[0];
+    expect(spawnCtx.agentSessionKey).toBe("agent:main:main");
+    expect(spawnCtx.agentChannel).toBe("discord");
+    expect(spawnCtx.agentTo).toBe("channel:12345");
   });
 
   it("returns forbidden for unauthorized cross-agent spawn", async () => {
