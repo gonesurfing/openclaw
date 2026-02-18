@@ -17,6 +17,29 @@ function extractAgentDefaultModelFallbacks(model: unknown): string[] | undefined
   return Array.isArray(fallbacks) ? fallbacks.map((v) => String(v)) : undefined;
 }
 
+export function applyOnboardAuthAgentModelsAndProviders(
+  cfg: OpenClawConfig,
+  params: {
+    agentModels: Record<string, AgentModelEntryConfig>;
+    providers: Record<string, ModelProviderConfig>;
+  },
+): OpenClawConfig {
+  return {
+    ...cfg,
+    agents: {
+      ...cfg.agents,
+      defaults: {
+        ...cfg.agents?.defaults,
+        models: params.agentModels,
+      },
+    },
+    models: {
+      mode: cfg.models?.mode ?? "merge",
+      providers: params.providers,
+    },
+  };
+}
+
 export function applyAgentDefaultModelPrimary(
   cfg: OpenClawConfig,
   primary: string,
@@ -66,35 +89,18 @@ export function applyProviderConfigWithDefaultModels(
         ? existingModels
         : [...existingModels, ...defaultModels]
       : defaultModels;
-
-  const { apiKey: existingApiKey, ...existingProviderRest } = (existingProvider ?? {}) as {
-    apiKey?: string;
-  };
-
-  const normalizedApiKey = typeof existingApiKey === "string" ? existingApiKey.trim() : undefined;
-
-  providers[params.providerId] = {
-    ...existingProviderRest,
-    baseUrl: params.baseUrl,
+  providers[params.providerId] = buildProviderConfig({
+    existingProvider,
     api: params.api,
-    ...(normalizedApiKey ? { apiKey: normalizedApiKey } : {}),
-    models: mergedModels.length > 0 ? mergedModels : defaultModels,
-  };
+    baseUrl: params.baseUrl,
+    mergedModels,
+    fallbackModels: defaultModels,
+  });
 
-  return {
-    ...cfg,
-    agents: {
-      ...cfg.agents,
-      defaults: {
-        ...cfg.agents?.defaults,
-        models: params.agentModels,
-      },
-    },
-    models: {
-      mode: cfg.models?.mode ?? "merge",
-      providers,
-    },
-  };
+  return applyOnboardAuthAgentModelsAndProviders(cfg, {
+    agentModels: params.agentModels,
+    providers,
+  });
 }
 
 export function applyProviderConfigWithDefaultModel(
@@ -144,33 +150,37 @@ export function applyProviderConfigWithModelCatalog(
           ),
         ]
       : catalogModels;
+  providers[params.providerId] = buildProviderConfig({
+    existingProvider,
+    api: params.api,
+    baseUrl: params.baseUrl,
+    mergedModels,
+    fallbackModels: catalogModels,
+  });
 
-  const { apiKey: existingApiKey, ...existingProviderRest } = (existingProvider ?? {}) as {
+  return applyOnboardAuthAgentModelsAndProviders(cfg, {
+    agentModels: params.agentModels,
+    providers,
+  });
+}
+
+function buildProviderConfig(params: {
+  existingProvider: ModelProviderConfig | undefined;
+  api: ModelApi;
+  baseUrl: string;
+  mergedModels: ModelDefinitionConfig[];
+  fallbackModels: ModelDefinitionConfig[];
+}): ModelProviderConfig {
+  const { apiKey: existingApiKey, ...existingProviderRest } = (params.existingProvider ?? {}) as {
     apiKey?: string;
   };
-
   const normalizedApiKey = typeof existingApiKey === "string" ? existingApiKey.trim() : undefined;
 
-  providers[params.providerId] = {
+  return {
     ...existingProviderRest,
     baseUrl: params.baseUrl,
     api: params.api,
     ...(normalizedApiKey ? { apiKey: normalizedApiKey } : {}),
-    models: mergedModels.length > 0 ? mergedModels : catalogModels,
-  };
-
-  return {
-    ...cfg,
-    agents: {
-      ...cfg.agents,
-      defaults: {
-        ...cfg.agents?.defaults,
-        models: params.agentModels,
-      },
-    },
-    models: {
-      mode: cfg.models?.mode ?? "merge",
-      providers,
-    },
+    models: params.mergedModels.length > 0 ? params.mergedModels : params.fallbackModels,
   };
 }
